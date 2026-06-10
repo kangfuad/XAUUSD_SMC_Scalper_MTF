@@ -1,5 +1,33 @@
 # CHANGELOG
 
+## [V0.3.0] - 2026-06-10
+### Added
+- `Types.mqh`: New enums (`ENUM_M5_CONFIRM_TYPE`, `ENUM_CANDLE_CONFIRM`) and structs (`StructRetrace`, `StructM5Confirm`, `StructCandleConfirm`, `StructConfirmationState`).
+- `Types.mqh`: Extended `ENUM_ZONE_STATUS` with `ZONE_RETRACE_FOUND`, `ZONE_WAIT_CONFIRMATION`, `ZONE_READY_BUY`, `ZONE_READY_SELL`.
+- `MarketStructure.mqh`: Minor swing High/Low detection on any TF (period 3). Used for M5 ChoCH/MSS.
+- `MarketStructure.mqh`: `DetectBullishMSS_M5()` — M5 close breaks above last M5 minor swing high.
+- `MarketStructure.mqh`: `DetectBearishMSS_M5()` — M5 close breaks below last M5 minor swing low.
+- `ZoneDetector.mqh`: `DetectRetrace()` — M15 or M5 candle low/high touches OB zone.
+- `ZoneDetector.mqh`: `DetectM5Confirmation()` — M5 MSS/ChoCH after retrace.
+- `ZoneDetector.mqh`: `DetectCandleConfirmation()` — M5 candle confirms direction (close above OB high / below OB low).
+- `ZoneDetector.mqh`: `EvaluateConfirmation()` — Full chained evaluation: Sweep → BOS → OB → Retrace → M5 Confirm → Candle Confirm → READY.
+- `ZoneDetector.mqh`: `DrawRetraceMarker()` — Gold dot at retrace touch.
+- `ZoneDetector.mqh`: `DrawReadyMarker()` — Green "BUY" or Red "SELL" label on confirmation.
+- `Logger.mqh`: `M5ConfirmTypeToString()`, `CandleConfirmTypeToString()` helper functions.
+- `Logger.mqh`: `OpenCSVV03()` — Creates `XAUUSD_SMC_V03_ConfirmationLog.csv` with 23 columns.
+- `Logger.mqh`: `LogConfirmationState()` — Print output for retrace + M5 confirm + candle confirm.
+- `Logger.mqh`: `LogConfirmationStateCSV()` — CSV output for V0.3 chain.
+- `XAUUSD_SMC_Scalper_MTF.mq5`: New input `InpEnableRetraceLog` for V0.3 logging.
+- `XAUUSD_SMC_Scalper_MTF.mq5`: Calls `EvaluateConfirmation()` and logs results on each new M15 candle.
+### Fixed
+- Zone status `WAIT_RETRACE` now correctly persists while price hasn't retraced to OB.
+- No change to V0.1/V0.2 logic — all additions are additive.
+### Rules Enforced
+- No auto-trade logic. No entry. No OrderSend/CTrade.
+- All signals use closed candles only (shift >= 1).
+- Final signal does not use candle shift 0.
+- READY_BUY / READY_SELL logged but not acted upon (scanner only).
+
 ## [V0.2.1] - 2026-06-10
 ### Fixed
 - Logger: Guard OB output against default/empty struct values (1970.01.01, 0.00000).

@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //| XAUUSD_SMC_Scalper_MTF.mq5                                       |
-//| V0.2: Scanner, Logger, Liquidity Sweep + Order Block.            |
+//| V0.3: Scanner, Logger, Sweep + OB + Retrace + M5 Confirm.        |
 //|       No auto trade.                                             |
 //+------------------------------------------------------------------+
 #property copyright "Hermes Agent"
@@ -20,6 +20,9 @@ input group "=== V0.2 Settings ==="
 input bool   InpEnableCSVLog  = true;  // Enable CSV logging to Files/XAUUSD_SMC_V02_SweepOBLog.csv
 input bool   InpEnableOBDraw  = true;  // Enable Order Block rectangle drawing
 
+input group "=== V0.3 Settings ==="
+input bool   InpEnableRetraceLog = true;  // Enable Retrace + M5 Confirm logging
+
 //--- V0.1 Globals (unchanged)
 CSignalEngine   g_signal_engine;
 CSMCLogger      g_logger;
@@ -29,16 +32,26 @@ StructMarketState g_market_state;
 CZoneDetector   g_zone_detector;
 StructZoneState g_zone_state;
 
+//--- V0.3 Globals
+StructConfirmationState g_conf_state;
+
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit() {
-   Print("XAUUSD_SMC_Scalper_MTF V0.2 Initialized. Scanner + Sweep + OB Logger Only.");
+   Print("XAUUSD_SMC_Scalper_MTF V0.3 Initialized. Scanner + Sweep + OB + Retrace + M5 Confirm Logger Only.");
    
    // Open CSV if enabled
    if(InpEnableCSVLog) {
       if(!g_logger.OpenCSV()) {
          Print("WARNING: CSV logging disabled due to file error.");
+      }
+   }
+   
+   // Open V0.3 CSV if retrace logging enabled
+   if(InpEnableRetraceLog) {
+      if(!g_logger.OpenCSVV03()) {
+         Print("WARNING: V0.3 CSV logging disabled due to file error.");
       }
    }
    
@@ -50,7 +63,7 @@ int OnInit() {
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason) {
    g_logger.CloseCSV();
-   Print("XAUUSD_SMC_Scalper_MTF V0.2 Deinitialized.");
+   Print("XAUUSD_SMC_Scalper_MTF V0.3 Deinitialized.");
 }
 
 //+------------------------------------------------------------------+
@@ -87,6 +100,24 @@ void OnTick() {
       // Log zone state to CSV
       if(InpEnableCSVLog) {
          g_logger.LogZoneStateCSV(_Symbol, g_market_state, g_zone_state);
+      }
+      
+      //--- V0.3: Evaluate confirmation chain (retrace -> M5 confirm -> candle confirm)
+      if(InpEnableRetraceLog) {
+         g_zone_detector.EvaluateConfirmation(PERIOD_M15,
+                                              g_market_state.last_swing_high.price,
+                                              g_market_state.last_swing_high.time,
+                                              g_market_state.last_swing_low.price,
+                                              g_market_state.last_swing_low.time,
+                                              g_conf_state);
+         
+         // Log confirmation state to Experts tab
+         if(InpEnableLogging) {
+            g_logger.LogConfirmationState(_Symbol, g_market_state, g_conf_state);
+         }
+         
+         // Log confirmation state to CSV
+         g_logger.LogConfirmationStateCSV(_Symbol, g_market_state, g_conf_state, g_zone_state.last_ob);
       }
    }
 }

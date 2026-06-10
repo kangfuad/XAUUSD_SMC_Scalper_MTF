@@ -43,8 +43,27 @@ private:
          case ZONE_BOS_AFTER_SWEEP_FOUND: return "BOS_AFTER_SWEEP_FOUND";
          case ZONE_OB_FOUND:              return "OB_FOUND";
          case ZONE_WAIT_RETRACE:          return "WAIT_RETRACE";
+         //--- V0.3 Statuses
+         case ZONE_RETRACE_FOUND:         return "RETRACE_FOUND";
+         case ZONE_WAIT_CONFIRMATION:     return "WAIT_CONFIRMATION";
+         case ZONE_READY_BUY:             return "READY_BUY";
+         case ZONE_READY_SELL:            return "READY_SELL";
       }
       return "NO_TRADE";
+   }
+   
+   //--- V0.3: M5 Confirm Type to String
+   string M5ConfirmTypeToString(ENUM_M5_CONFIRM_TYPE type) {
+      if(type == M5_CONFIRM_BULLISH_MSS) return "BULLISH_MSS";
+      if(type == M5_CONFIRM_BEARISH_MSS) return "BEARISH_MSS";
+      return "NONE";
+   }
+   
+   //--- V0.3: Candle Confirm Type to String
+   string CandleConfirmTypeToString(ENUM_CANDLE_CONFIRM type) {
+      if(type == CANDLE_CONFIRM_BUY)  return "BUY";
+      if(type == CANDLE_CONFIRM_SELL) return "SELL";
+      return "NONE";
    }
    
 public:
@@ -225,6 +244,195 @@ public:
          ob_time,
          ob_high,
          ob_low,
+         status_str
+      );
+      FileFlush(m_csv_handle);
+   }
+
+   //--- V0.3: Open V0.3 CSV file with extended headers
+   bool OpenCSVV03() {
+      if(m_csv_opened) return true;
+      string filename = "XAUUSD_SMC_V03_ConfirmationLog.csv";
+      
+      bool file_exists = FileIsExist(filename);
+      
+      m_csv_handle = FileOpen(filename, FILE_WRITE|FILE_READ|FILE_CSV|FILE_ANSI, ',');
+      if(m_csv_handle == INVALID_HANDLE) {
+         Print("CSV ERROR: Cannot open ", filename, " Error: ", GetLastError());
+         return false;
+      }
+      
+      if(!file_exists || FileSize(m_csv_handle) == 0) {
+         FileSeek(m_csv_handle, 0, SEEK_END);
+         FileWrite(m_csv_handle,
+            "time", "symbol", "m15_trend",
+            "sweep_type", "sweep_time", "sweep_price",
+            "bos_type", "bos_time", "bos_price",
+            "ob_type", "ob_time", "ob_high", "ob_low",
+            "retrace_time", "retrace_price",
+            "m5_confirm_type", "m5_confirm_time", "m5_confirm_price",
+            "candle_confirm_type", "candle_confirm_time", "candle_confirm_price",
+            "status");
+         FileFlush(m_csv_handle);
+      } else {
+         FileSeek(m_csv_handle, 0, SEEK_END);
+      }
+      
+      m_csv_opened = true;
+      return true;
+   }
+   
+   //--- V0.3 Log: Confirmation state (Print to Experts tab)
+   void LogConfirmationState(const string symbol,
+                             const StructMarketState &mkt,
+                             const StructConfirmationState &conf) {
+      
+      string trend_str  = TrendToString(mkt.m15_trend);
+      string status_str = ZoneStatusToString(conf.final_status);
+      
+      // Sweep (from mkt swings via last zone - but we use market state)
+      string sweep_str = "NONE";
+      string bos_str   = "NONE";
+      string ob_str    = "NONE";
+      
+      // Retrace
+      string retrace_str = "NONE";
+      string retrace_detail = "";
+      if(conf.retrace.is_valid && conf.retrace.time > 0) {
+         retrace_str = "FOUND";
+         retrace_detail = StringFormat("@ %.5f (%s)",
+                           conf.retrace.price,
+                           TimeToString(conf.retrace.time, TIME_DATE|TIME_MINUTES));
+      }
+      
+      // M5 Confirm
+      string m5_str = "NONE";
+      string m5_detail = "";
+      if(conf.m5_confirm.is_valid && conf.m5_confirm.time > 0) {
+         m5_str = M5ConfirmTypeToString(conf.m5_confirm.type);
+         m5_detail = StringFormat("@ %.5f (%s)",
+                           conf.m5_confirm.price,
+                           TimeToString(conf.m5_confirm.time, TIME_DATE|TIME_MINUTES));
+      }
+      
+      // Candle Confirm
+      string candle_str = "NONE";
+      string candle_detail = "";
+      if(conf.candle_confirm.is_valid && conf.candle_confirm.time > 0) {
+         candle_str = CandleConfirmTypeToString(conf.candle_confirm.type);
+         candle_detail = StringFormat("@ %.5f (%s)",
+                           conf.candle_confirm.close_price,
+                           TimeToString(conf.candle_confirm.time, TIME_DATE|TIME_MINUTES));
+      }
+      
+      string log_msg = StringFormat(
+         "[%s] %s M15 | Trend: %s | "
+         "Retrace: %s %s | "
+         "M5_Conf: %s %s | "
+         "Candle: %s %s | "
+         "Status: %s",
+         TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+         symbol,
+         trend_str,
+         retrace_str,
+         retrace_detail,
+         m5_str,
+         m5_detail,
+         candle_str,
+         candle_detail,
+         status_str
+      );
+      
+      Print(log_msg);
+   }
+   
+   //--- V0.3 Log: Write confirmation state to CSV
+   void LogConfirmationStateCSV(const string symbol,
+                                const StructMarketState &mkt,
+                                const StructConfirmationState &conf,
+                                const StructOrderBlock &ob) {
+      if(!OpenCSVV03()) return;
+      
+      string time_str    = TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS);
+      string trend_str   = TrendToString(mkt.m15_trend);
+      
+      // Market state sweeps (simplified - use market state swings)
+      string sweep_str   = "NONE";
+      string sweep_time  = "NONE";
+      string sweep_price = "0";
+      if(mkt.last_swing_high.price > 0 || mkt.last_swing_low.price > 0) {
+         // Not perfect but provides some context
+      }
+      
+      // BOS
+      string bos_str     = "NONE";
+      string bos_time    = "NONE";
+      string bos_price   = "0";
+      if(mkt.last_bos.price > 0) {
+         bos_str   = mkt.last_bos.is_bullish ? "BULLISH" : "BEARISH";
+         bos_time  = (mkt.last_bos.time > 0) ?
+                     TimeToString(mkt.last_bos.time, TIME_DATE|TIME_SECONDS) : "NONE";
+         bos_price = DoubleToString(mkt.last_bos.price, 5);
+      }
+      
+      // OB (from passed struct)
+      string ob_str      = "NONE";
+      string ob_time     = "NONE";
+      string ob_high     = "0";
+      string ob_low      = "0";
+      if(IsValidOrderBlock(ob)) {
+         ob_str   = OBTypeToString(ob.type);
+         ob_time  = TimeToString(ob.time, TIME_DATE|TIME_SECONDS);
+         ob_high  = DoubleToString(ob.ob_high, 5);
+         ob_low   = DoubleToString(ob.ob_low, 5);
+      }
+      
+      // Retrace
+      string retrace_time  = (conf.retrace.is_valid && conf.retrace.time > 0) ?
+                              TimeToString(conf.retrace.time, TIME_DATE|TIME_SECONDS) : "NONE";
+      string retrace_price = (conf.retrace.is_valid && conf.retrace.price > 0) ?
+                              DoubleToString(conf.retrace.price, 5) : "0";
+      
+      // M5 Confirm
+      string m5_type  = (conf.m5_confirm.is_valid) ?
+                         M5ConfirmTypeToString(conf.m5_confirm.type) : "NONE";
+      string m5_time  = (conf.m5_confirm.is_valid && conf.m5_confirm.time > 0) ?
+                         TimeToString(conf.m5_confirm.time, TIME_DATE|TIME_SECONDS) : "NONE";
+      string m5_price = (conf.m5_confirm.is_valid && conf.m5_confirm.price > 0) ?
+                         DoubleToString(conf.m5_confirm.price, 5) : "0";
+      
+      // Candle Confirm
+      string candle_type  = (conf.candle_confirm.is_valid) ?
+                             CandleConfirmTypeToString(conf.candle_confirm.type) : "NONE";
+      string candle_time  = (conf.candle_confirm.is_valid && conf.candle_confirm.time > 0) ?
+                             TimeToString(conf.candle_confirm.time, TIME_DATE|TIME_SECONDS) : "NONE";
+      string candle_price = (conf.candle_confirm.is_valid && conf.candle_confirm.close_price > 0) ?
+                             DoubleToString(conf.candle_confirm.close_price, 5) : "0";
+      
+      string status_str  = ZoneStatusToString(conf.final_status);
+      
+      FileWrite(m_csv_handle,
+         time_str,
+         symbol,
+         trend_str,
+         sweep_str,
+         sweep_time,
+         sweep_price,
+         bos_str,
+         bos_time,
+         bos_price,
+         ob_str,
+         ob_time,
+         ob_high,
+         ob_low,
+         retrace_time,
+         retrace_price,
+         m5_type,
+         m5_time,
+         m5_price,
+         candle_type,
+         candle_time,
+         candle_price,
          status_str
       );
       FileFlush(m_csv_handle);

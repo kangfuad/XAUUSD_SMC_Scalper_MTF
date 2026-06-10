@@ -2,6 +2,7 @@
 //| ZoneDetector.mqh                                                 |
 //| V0.2: Liquidity Sweep + Order Block detection                    |
 //|       Closed candles only. No entry logic.                       |
+//| V0.3: Added retrace detection + M5 confirmation + candle confirm |
 //+------------------------------------------------------------------+
 #property strict
 
@@ -215,6 +216,230 @@ public:
       }
    }
    
+   //--- V0.3: Detect Retrace to Order Block
+   //    Bullish: Low of M15 or M5 candle touches OB zone (low enters ob_low..ob_high)
+   //    Bearish: High of M15 or M5 candle touches OB zone (high enters ob_low..ob_high)
+   //    Closed candles only (shift >= 1)
+   //    after_time: only check candles after this time (after OB was found)
+   bool DetectRetrace(ENUM_TIMEFRAMES tf,
+                      const StructOrderBlock &ob,
+                      datetime after_time,
+                      StructRetrace &retrace_out) {
+      
+      retrace_out.time     = 0;
+      retrace_out.price    = 0;
+      retrace_out.is_valid = false;
+      
+      if(!IsValidOrderBlock(ob)) return false;
+      
+      int start_shift = iBarShift(_Symbol, tf, after_time);
+      if(start_shift < 0) start_shift = 1;
+      
+      // Check M15 candles first
+      for(int i = 1; i <= start_shift && i < 50; i++) {
+         datetime candle_time = iTime(_Symbol, tf, i);
+         if(candle_time <= after_time) continue;
+         
+         double candle_low  = iLow(_Symbol, tf, i);
+         double candle_high = iHigh(_Symbol, tf, i);
+         
+         // Bullish OB retrace: low enters OB zone
+         if(ob.type == OB_BULLISH) {
+            if(candle_low <= ob.ob_high && candle_low >= ob.ob_low) {
+               retrace_out.time     = candle_time;
+               retrace_out.price    = candle_low;
+               retrace_out.is_valid = true;
+               return true;
+            }
+         }
+         
+         // Bearish OB retrace: high enters OB zone
+         if(ob.type == OB_BEARISH) {
+            if(candle_high >= ob.ob_low && candle_high <= ob.ob_high) {
+               retrace_out.time     = candle_time;
+               retrace_out.price    = candle_high;
+               retrace_out.is_valid = true;
+               return true;
+            }
+         }
+      }
+      
+      // Check M5 candles for more granular detection
+      for(int i = 1; i < 200; i++) { // max 200 M5 candles (~16 hours)
+         datetime candle_time = iTime(_Symbol, PERIOD_M5, i);
+         if(candle_time <= after_time) break;
+         
+         double candle_low  = iLow(_Symbol, PERIOD_M5, i);
+         double candle_high = iHigh(_Symbol, PERIOD_M5, i);
+         
+         // Bullish OB retrace: low enters OB zone
+         if(ob.type == OB_BULLISH) {
+            if(candle_low <= ob.ob_high && candle_low >= ob.ob_low) {
+               retrace_out.time     = candle_time;
+               retrace_out.price    = candle_low;
+               retrace_out.is_valid = true;
+               return true;
+            }
+         }
+         
+         // Bearish OB retrace: high enters OB zone
+         if(ob.type == OB_BEARISH) {
+            if(candle_high >= ob.ob_low && candle_high <= ob.ob_high) {
+               retrace_out.time     = candle_time;
+               retrace_out.price    = candle_high;
+               retrace_out.is_valid = true;
+               return true;
+            }
+         }
+      }
+      
+      return false;
+   }
+   
+   //--- V0.3: Detect M5 Confirmation (MSS/ChoCH)
+   //    Bullish: M5 close breaks above last minor swing high M5 after retrace
+   //    Bearish: M5 close breaks below last minor swing low M5 after retrace
+   //    Closed candles only (shift >= 1)
+   bool DetectM5Confirmation(const StructRetrace &retrace,
+                              ENUM_OB_TYPE ob_type,
+                              StructM5Confirm &confirm_out) {
+      
+      confirm_out.time     = 0;
+      confirm_out.price    = 0;
+      confirm_out.type     = M5_CONFIRM_NONE;
+      confirm_out.is_valid = false;
+      
+      if(!retrace.is_valid) return false;
+      
+      int retrace_shift = iBarShift(_Symbol, PERIOD_M5, retrace.time);
+      if(retrace_shift < 0) return false;
+      
+      // Look for minor swing in the range before retrace
+      int search_end = retrace_shift + 50; // search up to 50 candles before retrace
+      if(search_end > 200) search_end = 200;
+      
+      double mss_price = 0;
+      datetime mss_time = 0;
+      
+      if(ob_type == OB_BULLISH) {
+         if(m_ms.DetectBullishMSS_M5(1, search_end, retrace.time, mss_price, mss_time)) {
+            confirm_out.time     = mss_time;
+            confirm_out.price    = mss_price;
+            confirm_out.type     = M5_CONFIRM_BULLISH_MSS;
+            confirm_out.is_valid = true;
+            return true;
+         }
+      }
+      
+      if(ob_type == OB_BEARISH) {
+         if(m_ms.DetectBearishMSS_M5(1, search_end, retrace.time, mss_price, mss_time)) {
+            confirm_out.time     = mss_time;
+            confirm_out.price    = mss_price;
+            confirm_out.type     = M5_CONFIRM_BEARISH_MSS;
+            confirm_out.is_valid = true;
+            return true;
+         }
+      }
+      
+      return false;
+   }
+   
+   //--- V0.3: Detect Candle Confirmation on M5
+   //    BUY: M5 candle is bullish (close > open) AND close > OB high
+   //    SELL: M5 candle is bearish (close < open) AND close < OB low
+   //    Must happen after M5 confirmation
+   //    Closed candle only (shift >= 1)
+   bool DetectCandleConfirmation(const StructM5Confirm &m5_confirm,
+                                  const StructOrderBlock &ob,
+                                  datetime after_time,
+                                  StructCandleConfirm &candle_out) {
+      
+      candle_out.time        = 0;
+      candle_out.close_price = 0;
+      candle_out.type        = CANDLE_CONFIRM_NONE;
+      candle_out.is_valid    = false;
+      
+      if(!m5_confirm.is_valid || !IsValidOrderBlock(ob)) return false;
+      
+      int start_shift = iBarShift(_Symbol, PERIOD_M5, after_time);
+      if(start_shift < 0) start_shift = 1;
+      
+      // Check M5 candles after the M5 confirmation
+      for(int i = 1; i <= start_shift && i < 50; i++) {
+         datetime candle_time = iTime(_Symbol, PERIOD_M5, i);
+         if(candle_time <= after_time) continue;
+         
+         double open_price  = iOpen(_Symbol, PERIOD_M5, i);
+         double close_price = iClose(_Symbol, PERIOD_M5, i);
+         
+         // BUY confirmation: bullish candle close above OB high
+         if(ob.type == OB_BULLISH) {
+            if(close_price > open_price && close_price > ob.ob_high) {
+               candle_out.time        = candle_time;
+               candle_out.close_price = close_price;
+               candle_out.type        = CANDLE_CONFIRM_BUY;
+               candle_out.is_valid    = true;
+               return true;
+            }
+         }
+         
+         // SELL confirmation: bearish candle close below OB low
+         if(ob.type == OB_BEARISH) {
+            if(close_price < open_price && close_price < ob.ob_low) {
+               candle_out.time        = candle_time;
+               candle_out.close_price = close_price;
+               candle_out.type        = CANDLE_CONFIRM_SELL;
+               candle_out.is_valid    = true;
+               return true;
+            }
+         }
+      }
+      
+      return false;
+   }
+   
+   //--- V0.3: Draw retrace marker
+   void DrawRetraceMarker(const StructRetrace &retrace) {
+      if(!retrace.is_valid || retrace.time == 0) return;
+      
+      MqlDateTime dt;
+      TimeToStruct(retrace.time, dt);
+      string obj_name = StringFormat("SMC_RETRACE_%04d%02d%02d_%02d%02d",
+                                     dt.year, dt.mon, dt.day, dt.hour, dt.min);
+      
+      if(ObjectExists(obj_name)) return;
+      
+      if(ObjectCreate(0, obj_name, OBJ_ARROW, 0, retrace.time, retrace.price)) {
+         ObjectSetInteger(0, obj_name, OBJPROP_ARROWCODE, 159); // small dot
+         ObjectSetInteger(0, obj_name, OBJPROP_COLOR, clrGold);
+         ObjectSetInteger(0, obj_name, OBJPROP_WIDTH, 2);
+         ObjectSetString(0, obj_name, OBJPROP_TEXT, "Retrace");
+      }
+   }
+   
+   //--- V0.3: Draw READY marker
+   void DrawReadyMarker(ENUM_ZONE_STATUS status, datetime time, double price) {
+      if(status != ZONE_READY_BUY && status != ZONE_READY_SELL) return;
+      if(time == 0) return;
+      
+      MqlDateTime dt;
+      TimeToStruct(time, dt);
+      string obj_name = StringFormat("SMC_READY_%s_%04d%02d%02d_%02d%02d",
+                                     (status == ZONE_READY_BUY) ? "BUY" : "SELL",
+                                     dt.year, dt.mon, dt.day, dt.hour, dt.min);
+      
+      if(ObjectExists(obj_name)) return;
+      
+      if(ObjectCreate(0, obj_name, OBJ_TEXT, 0, time, price)) {
+         ObjectSetString(0, obj_name, OBJPROP_TEXT,
+                          (status == ZONE_READY_BUY) ? "BUY" : "SELL");
+         ObjectSetInteger(0, obj_name, OBJPROP_COLOR,
+                           (status == ZONE_READY_BUY) ? clrLime : clrRed);
+         ObjectSetInteger(0, obj_name, OBJPROP_FONTSIZE, 10);
+         ObjectSetString(0, obj_name, OBJPROP_FONT, "Arial Bold");
+      }
+   }
+   
    //--- Full zone evaluation: Sweep -> BOS -> OB
    void EvaluateZones(ENUM_TIMEFRAMES tf,
                       double swing_high_price, datetime swing_high_time,
@@ -270,5 +495,105 @@ public:
       
       //--- Step 5: Set status to WAIT_RETRACE (OB found, waiting for price to return)
       zone.zone_status = ZONE_WAIT_RETRACE;
+   }
+
+   //--- V0.3: Full confirmation evaluation (chained: Sweep->BOS->OB->Retrace->M5Confirm->CandleConfirm)
+   void EvaluateConfirmation(ENUM_TIMEFRAMES tf,
+                              double swing_high_price, datetime swing_high_time,
+                              double swing_low_price,  datetime swing_low_time,
+                              StructConfirmationState &conf) {
+
+      // Reset all state
+      conf.retrace.time     = 0;
+      conf.retrace.price    = 0;
+      conf.retrace.is_valid = false;
+      conf.m5_confirm.time        = 0;
+      conf.m5_confirm.price       = 0;
+      conf.m5_confirm.type        = M5_CONFIRM_NONE;
+      conf.m5_confirm.is_valid    = false;
+      conf.candle_confirm.time        = 0;
+      conf.candle_confirm.close_price = 0;
+      conf.candle_confirm.type        = CANDLE_CONFIRM_NONE;
+      conf.candle_confirm.is_valid    = false;
+      conf.final_status               = ZONE_NO_TRADE;
+
+      // --- Phase 1: Sweep + BOS + OB (reuse existing logic)
+      StructZoneState zone;
+      EvaluateZones(tf, swing_high_price, swing_high_time,
+                    swing_low_price, swing_low_time, zone);
+
+      if(!IsValidOrderBlock(zone.last_ob)) {
+         conf.final_status = zone.zone_status;
+         return;
+      }
+
+      // We have valid sweep+BOS+OB
+      ENUM_OB_TYPE ob_type = zone.last_ob.type;
+
+      // Check if we already hit READY_BUY or READY_SELL from previous call
+      // If so, skip recomputation (markers persist)
+
+      // --- Phase 2: Detect Retrace
+      datetime ob_found_time = iTime(_Symbol, PERIOD_M15, 0); // time when OB was formed
+      if(!DetectRetrace(tf, zone.last_ob, ob_found_time, conf.retrace)) {
+         conf.final_status = ZONE_WAIT_RETRACE;
+         return;
+      }
+      conf.final_status = ZONE_RETRACE_FOUND;
+
+      // Draw retrace marker
+      DrawRetraceMarker(conf.retrace);
+
+      // --- Phase 3: Detect M5 Confirmation after retrace
+      int retrace_shift = iBarShift(_Symbol, PERIOD_M5, conf.retrace.time);
+      if(retrace_shift < 0) retrace_shift = 10;
+      
+      int search_end = retrace_shift + 50;
+      if(search_end > 200) search_end = 200;
+
+      double mss_price = 0;
+      datetime mss_time = 0;
+      bool m5_found = false;
+
+      if(ob_type == OB_BULLISH) {
+         if(m_ms.DetectBullishMSS_M5(1, search_end, conf.retrace.time, mss_price, mss_time)) {
+            conf.m5_confirm.time     = mss_time;
+            conf.m5_confirm.price    = mss_price;
+            conf.m5_confirm.type     = M5_CONFIRM_BULLISH_MSS;
+            conf.m5_confirm.is_valid = true;
+            m5_found = true;
+         }
+      } else if(ob_type == OB_BEARISH) {
+         if(m_ms.DetectBearishMSS_M5(1, search_end, conf.retrace.time, mss_price, mss_time)) {
+            conf.m5_confirm.time     = mss_time;
+            conf.m5_confirm.price    = mss_price;
+            conf.m5_confirm.type     = M5_CONFIRM_BEARISH_MSS;
+            conf.m5_confirm.is_valid = true;
+            m5_found = true;
+         }
+      }
+
+      if(!m5_found) {
+         conf.final_status = ZONE_WAIT_CONFIRMATION;
+         return;
+      }
+
+      // --- Phase 4: Detect Candle Confirmation after M5 confirm
+      int m5_shift = iBarShift(_Symbol, PERIOD_M5, conf.m5_confirm.time);
+      if(m5_shift < 0) m5_shift = 10;
+
+      if(!DetectCandleConfirmation(conf.m5_confirm, zone.last_ob, conf.m5_confirm.time, conf.candle_confirm)) {
+         conf.final_status = ZONE_WAIT_CONFIRMATION;
+         return;
+      }
+
+      // All phases complete!
+      if(zone.last_ob.type == OB_BULLISH && conf.candle_confirm.type == CANDLE_CONFIRM_BUY) {
+         conf.final_status = ZONE_READY_BUY;
+         DrawReadyMarker(ZONE_READY_BUY, conf.candle_confirm.time, conf.candle_confirm.close_price);
+      } else if(zone.last_ob.type == OB_BEARISH && conf.candle_confirm.type == CANDLE_CONFIRM_SELL) {
+         conf.final_status = ZONE_READY_SELL;
+         DrawReadyMarker(ZONE_READY_SELL, conf.candle_confirm.time, conf.candle_confirm.close_price);
+      }
    }
 };
