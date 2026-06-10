@@ -1,0 +1,12 @@
+*.ex5
+*.log
+*.tmp
+*.bak
+*.bak_*
+.DS_Store
+
+tester/logs/*
+tester/reports/*
+
+!tester/logs/.gitkeep
+!tester/reports/.gitkeep
